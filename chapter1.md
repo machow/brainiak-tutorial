@@ -4,42 +4,6 @@ description : Insert the chapter description here
 attachments :
   slides_link : https://s3.amazonaws.com/assets.datacamp.com/course/teach/slides_example.pdf
 
---- type:MultipleChoiceExercise lang:python xp:50 skills:1 key:8c3b7ed662
-## A really bad movie
-
-Have a look at the plot that showed up in the viewer to the right. Which type of movies have the worst rating assigned to them?
-
-*** =instructions
-- Long movies, clearly
-- Short movies, clearly
-- Long movies, but the correlation seems weak
-- Short movies, but the correlation seems weak
-
-*** =hint
-Have a look at the plot. Do you see a trend in the dots?
-
-*** =pre_exercise_code
-```{python}
-# The pre exercise code runs code to initialize the user's workspace.
-# You can use it to load packages, initialize datasets and draw a plot in the viewer
-
-import pandas as pd
-import matplotlib.pyplot as plt
-
-movies = pd.read_csv("http://s3.amazonaws.com/assets.datacamp.com/course/introduction_to_r/movies.csv")
-
-plt.scatter(movies.runtime, movies.rating)
-plt.show()
-```
-
-*** =sct
-```{python}
-# SCT written with pythonwhat: https://github.com/datacamp/pythonwhat/wiki
-
-msg_bad = "That is not correct!"
-msg_success = "Exactly! The correlation is very weak though."
-test_mc(4, [msg_bad, msg_bad, msg_bad, msg_success])
-```
 
 --- type:NormalExercise lang:python xp:100 skills:1 key:ef6d135aaf
 ## Plot the movies yourself
@@ -49,73 +13,222 @@ Do you remember the plot of the last exercise? Let's make an even cooler plot!
 A dataset of movies, `movies`, is available in the workspace.
 
 *** =instructions
-- The first function, `np.unique()`, uses the `unique()` function of the `numpy` package to get integer values for the movie genres. You don't have to change this code, just have a look!
-- Import `pyplot` in the `matplotlib` package. Set an alias for this import: `plt`.
-- Use `plt.scatter()` to plot `movies.runtime` onto the x-axis, `movies.rating` onto the y-axis and use `ints` for the color of the dots. You should use the first and second positional argument, and the `c` keyword.
-- Show the plot using `plt.show()`.
 
 *** =hint
-- You don't have to program anything for the first instruction, just take a look at the first line of code.
-- Use `import ___ as ___` to import `matplotlib.pyplot` as `plt`.
-- Use `plt.scatter(___, ___, c = ___)` for the third instruction.
-- You'll always have to type in `plt.show()` to show the plot you created.
+
 
 *** =pre_exercise_code
 ```{python}
-import pandas as pd
-movies = pd.read_csv("http://s3.amazonaws.com/assets.datacamp.com/course/introduction_to_r/movies.csv")
-
-import numpy as np
 ```
 
 *** =sample_code
 ```{python}
-# Get integer values for genres
-_, ints = np.unique(movies.genre, return_inverse = True)
+"""Example of finding event segmentations on simulated data
+This code generates simulated datasets that have temporally-clustered
+structure (with the same series of latent event patterns). An event
+segmentation is learned on the first dataset, and then we try to find the same
+series of events in other datasets. We measure how well we find the latent
+boundaries and the log-likelihood of the fits, and compare to a null model
+in which the event order is randomly shuffled.
+"""
+import brainiak.eventseg.event
+import numpy as np
+from scipy import stats
+import logging
+import matplotlib.pyplot as plt
 
-# Import matplotlib.pyplot
+logging.basicConfig(level=logging.DEBUG)
 
 
-# Make a scatter plot: runtime on  x-axis, rating on y-axis and set c to ints
+def generate_event_labels(T, K, length_std):
+    event_labels = np.zeros(T, dtype=int)
+    start_TR = 0
+    for e in range(K - 1):
+        length = round(
+            ((T - start_TR) / (K - e)) * (1 + length_std * np.random.randn()))
+        length = min(max(length, 1), T - start_TR - (K - e))
+        event_labels[start_TR:(start_TR + length)] = e
+        start_TR = start_TR + length
+    event_labels[start_TR:] = K - 1
+
+    return event_labels
 
 
-# Show the plot
+def generate_data(V, T, event_labels, event_means, noise_std):
+    simul_data = np.empty((V, T))
+    for t in range(T):
+        simul_data[:, t] = stats.multivariate_normal.rvs(
+            event_means[:, event_labels[t]], cov=noise_std, size=1)
 
+    simul_data = stats.zscore(simul_data, axis=1, ddof=1)
+    return simul_data
+
+
+# Parameters for creating small simulated datasets
+V = 10
+K = 10
+T = 500
+T2 = 300
+
+# Generate the first dataset
+np.random.seed(1)
+event_means = np.random.randn(V, K)
+event_labels = generate_event_labels(T, K, 0.1)
+simul_data = generate_data(V, T, event_labels, event_means, 1)
+
+# Find the events in this dataset
+simul_seg = brainiak.eventseg.event.EventSegment(K)
+simul_seg.fit(simul_data.T)
+
+# Generate other datasets with the same underlying sequence of event
+# patterns, and try to find matching events
+test_loops = 10
+bound_match = np.empty((2, test_loops))
+LL = np.empty((2, test_loops))
+for test_i in range(test_loops):
+    # Generate data
+    event_labels2 = generate_event_labels(T2, K, 0.5)
+    simul_data2 = generate_data(V, T2, event_labels2, event_means, 0.1)
+
+    # Find events matching previously-learned events
+    gamma, LL[0, test_i] = simul_seg.find_events(simul_data2.T)
+    est_events2 = np.argmax(gamma, axis=1)
+    bound_match[0, test_i] = 1 - np.sum(abs(np.diff(event_labels2) -
+                                            np.diff(est_events2))) / (2 * K)
+
+    # Run again, but with the order of events shuffled so that it no longer
+    # corresponds to the training data
+    gamma, LL[1, test_i] = simul_seg.find_events(simul_data2.T, scramble=True)
+    est_events2 = np.argmax(gamma, axis=1)
+    bound_match[1, test_i] = 1 - np.sum(abs(np.diff(event_labels2) -
+                                            np.diff(est_events2))) / (2 * K)
+
+# Across the testing datasets, print how well we identify the true event
+# boundaries and the log-likehoods in real vs. shuffled data
+print("Boundary match: {:.2} (null: {:.2})".format(
+    np.mean(bound_match[0, :]), np.mean(bound_match[1, :])))
+print("Log-likelihood: {:.3} (null: {:.3})".format(
+    np.mean(LL[0, :]), np.mean(LL[1, :])))
+
+plt.figure()
+plt.subplot(2, 1, 1)
+plt.imshow(simul_data2, interpolation='nearest', cmap=plt.cm.bone,
+           aspect='auto')
+plt.xlabel('Timepoints')
+plt.ylabel('Voxels')
+plt.subplot(2, 1, 2)
+gamma, LL[0, test_i] = simul_seg.find_events(simul_data2.T)
+est_events2 = np.argmax(gamma, axis=1)
+plt.plot(est_events2)
+plt.xlabel('Timepoints')
+plt.ylabel('Event label')
+plt.show()
 ```
 
 *** =solution
 ```{python}
-# Get integer values for genres
-_, ints = np.unique(movies.genre, return_inverse = True)
-
-# Import matplotlib.pyplot
+"""Example of finding event segmentations on simulated data
+This code generates simulated datasets that have temporally-clustered
+structure (with the same series of latent event patterns). An event
+segmentation is learned on the first dataset, and then we try to find the same
+series of events in other datasets. We measure how well we find the latent
+boundaries and the log-likelihood of the fits, and compare to a null model
+in which the event order is randomly shuffled.
+"""
+import brainiak.eventseg.event
+import numpy as np
+from scipy import stats
+import logging
 import matplotlib.pyplot as plt
 
-# Make a scatter plot: runtime on  x-axis, rating on y-axis and set c to ints
-plt.scatter(movies.runtime, movies.rating, c=ints)
+logging.basicConfig(level=logging.DEBUG)
 
-# Show the plot
+
+def generate_event_labels(T, K, length_std):
+    event_labels = np.zeros(T, dtype=int)
+    start_TR = 0
+    for e in range(K - 1):
+        length = round(
+            ((T - start_TR) / (K - e)) * (1 + length_std * np.random.randn()))
+        length = min(max(length, 1), T - start_TR - (K - e))
+        event_labels[start_TR:(start_TR + length)] = e
+        start_TR = start_TR + length
+    event_labels[start_TR:] = K - 1
+
+    return event_labels
+
+
+def generate_data(V, T, event_labels, event_means, noise_std):
+    simul_data = np.empty((V, T))
+    for t in range(T):
+        simul_data[:, t] = stats.multivariate_normal.rvs(
+            event_means[:, event_labels[t]], cov=noise_std, size=1)
+
+    simul_data = stats.zscore(simul_data, axis=1, ddof=1)
+    return simul_data
+
+
+# Parameters for creating small simulated datasets
+V = 10
+K = 10
+T = 500
+T2 = 300
+
+# Generate the first dataset
+np.random.seed(1)
+event_means = np.random.randn(V, K)
+event_labels = generate_event_labels(T, K, 0.1)
+simul_data = generate_data(V, T, event_labels, event_means, 1)
+
+# Find the events in this dataset
+simul_seg = brainiak.eventseg.event.EventSegment(K)
+simul_seg.fit(simul_data.T)
+
+# Generate other datasets with the same underlying sequence of event
+# patterns, and try to find matching events
+test_loops = 10
+bound_match = np.empty((2, test_loops))
+LL = np.empty((2, test_loops))
+for test_i in range(test_loops):
+    # Generate data
+    event_labels2 = generate_event_labels(T2, K, 0.5)
+    simul_data2 = generate_data(V, T2, event_labels2, event_means, 0.1)
+
+    # Find events matching previously-learned events
+    gamma, LL[0, test_i] = simul_seg.find_events(simul_data2.T)
+    est_events2 = np.argmax(gamma, axis=1)
+    bound_match[0, test_i] = 1 - np.sum(abs(np.diff(event_labels2) -
+                                            np.diff(est_events2))) / (2 * K)
+
+    # Run again, but with the order of events shuffled so that it no longer
+    # corresponds to the training data
+    gamma, LL[1, test_i] = simul_seg.find_events(simul_data2.T, scramble=True)
+    est_events2 = np.argmax(gamma, axis=1)
+    bound_match[1, test_i] = 1 - np.sum(abs(np.diff(event_labels2) -
+                                            np.diff(est_events2))) / (2 * K)
+
+# Across the testing datasets, print how well we identify the true event
+# boundaries and the log-likehoods in real vs. shuffled data
+print("Boundary match: {:.2} (null: {:.2})".format(
+    np.mean(bound_match[0, :]), np.mean(bound_match[1, :])))
+print("Log-likelihood: {:.3} (null: {:.3})".format(
+    np.mean(LL[0, :]), np.mean(LL[1, :])))
+
+plt.figure()
+plt.subplot(2, 1, 1)
+plt.imshow(simul_data2, interpolation='nearest', cmap=plt.cm.bone,
+           aspect='auto')
+plt.xlabel('Timepoints')
+plt.ylabel('Voxels')
+plt.subplot(2, 1, 2)
+gamma, LL[0, test_i] = simul_seg.find_events(simul_data2.T)
+est_events2 = np.argmax(gamma, axis=1)
+plt.plot(est_events2)
+plt.xlabel('Timepoints')
+plt.ylabel('Event label')
 plt.show()
 ```
 
 *** =sct
 ```{python}
-# SCT written with pythonwhat: https://github.com/datacamp/pythonwhat/wiki
-
-test_function("numpy.unique",
-              not_called_msg = "Don't remove the call of `np.unique` to define `ints`.",
-              incorrect_msg = "Don't change the call of `np.unique` to define `ints`.")
-
-test_object("ints",
-            undefined_msg = "Don't remove the definition of the predefined `ints` object.",
-            incorrect_msg = "Don't change the definition of the predefined `ints` object.")
-
-test_import("matplotlib.pyplot", same_as = True)
-
-test_function("matplotlib.pyplot.scatter",
-              incorrect_msg = "You didn't use `plt.scatter()` correctly, have another look at the instructions.")
-
-test_function("matplotlib.pyplot.show")
-
-success_msg("Great work!")
 ```
